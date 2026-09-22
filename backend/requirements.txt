@@ -1,0 +1,14 @@
+flask
+flask-cors
+scikit-learn
+numpy
+joblib
+bcrypt
+PyJWT
+python-dotenv
+reportlab
+Pillow
+pytesseract
+pdfplumber
+requests
+APScheduler
