@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Search, ListChecks, Clock, Bot, Settings, UserCircle2,
   Shield, ShieldAlert, ShieldCheck, Send, Loader2, Sun, Moon,
   Menu, X, RefreshCw, Check, AlertTriangle, CheckCircle,
-  XCircle, MessageSquare, BarChart3, Zap
+  XCircle, MessageSquare, BarChart3, Zap, Paperclip
 } from "lucide-react";
 import jsPDF from "jspdf";
 import {
@@ -139,7 +139,8 @@ const api = {
     const r = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ message, history, account })
+      // Each question should be answered from its own meaning, not a previous topic.
+      body: JSON.stringify({ message, history: [], account })
     });
     const data = await r.json().catch(() => ({ error: "Invalid response from backend" }));
     if (!r.ok) {
@@ -616,7 +617,7 @@ function AnalyzePage({ t, account }) {
             <button onClick={() => setSourceMode("text")} style={{ padding: "7px 12px", borderRadius: 10, border: `1px solid ${sourceMode === "text" ? t.accent : t.border}`, background: sourceMode === "text" ? `${t.accent}16` : "transparent", color: sourceMode === "text" ? t.accent : t.textMuted, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Paste Text</button>
             <label style={{ padding: "7px 12px", borderRadius: 10, border: `1px solid ${sourceMode === "upload" ? t.accent : t.border}`, background: sourceMode === "upload" ? `${t.accent}16` : "transparent", color: sourceMode === "upload" ? t.accent : t.textMuted, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
               Upload File / Image
-              <input type="file" accept=".txt,.csv,.json,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif" onChange={handleUpload} style={{ display: "none" }} />
+              <input type="file" accept=".pdf,.docx,.txt,.md,.log,.rtf,.csv,.json,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif" onChange={handleUpload} style={{ display: "none" }} />
             </label>
           </div>
         </div>
@@ -779,18 +780,27 @@ function BatchAnalyzePage({ t, account }) {
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    setInput(text);
     setUploadMode("file");
     setLoading(true); setResults([]); setProgress(0); setSummary(null);
     try {
-      const r = await api.bulkScan(text, file.type || "text/plain", account);
-      if (r.error) {
+      const extracted = await api.analyzeUpload(file, account);
+      if (extracted.error) {
         setResults([]);
-        setSummary({ error: r.error });
+        setSummary({ error: extracted.error });
+      } else if (!extracted.extracted_text?.trim()) {
+        setResults([]);
+        setSummary({ error: "No readable messages were found in this file." });
       } else {
-        setResults(r.results || []);
-        setSummary(r.summary || null);
+        const extractedText = extracted.extracted_text;
+        setInput(extractedText);
+        const r = await api.bulkScan(extractedText, "text/plain", account);
+        if (r.error) {
+          setResults([]);
+          setSummary({ error: r.error });
+        } else {
+          setResults(r.results || []);
+          setSummary(r.summary || null);
+        }
       }
     } catch {
       setSummary({ error: "Could not analyze uploaded file. Please try again." });
@@ -976,6 +986,7 @@ function AIAssistantPage({ t, account }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
+  const fileRef = useRef(null);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
 
@@ -993,11 +1004,44 @@ function AIAssistantPage({ t, account }) {
     setLoading(false);
   };
 
+  const uploadFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || loading) return;
+    setMsgs(m => [...m, { role: "user", content: `📎 Analyze this file: ${file.name}` }]);
+    setLoading(true);
+    try {
+      const r = await api.analyzeUpload(file, account);
+      const result = r.result || {};
+      const content = r.error
+        ? `⚠️ ${r.error}`
+        : r.extracted_text
+          ? `File: ${file.name}\nRisk: ${result.risk_level || "Unknown"} (${result.confidence ?? "-"}%)\n\n${result.recommendation || "Analysis completed."}\n\nReasons:\n${(result.reasons || []).map(reason => `• ${reason}`).join("\n")}`
+          : "⚠️ No readable text was found in this file. For images, make sure the text is clear and Tesseract OCR is installed.";
+      setMsgs(m => [...m, { role: "assistant", content }]);
+    } catch (error) {
+      console.error("File analysis failed", error);
+      setMsgs(m => [...m, { role: "assistant", content: "⚠️ Could not analyze this file. Check that the backend is running and the file format is supported." }]);
+    }
+    setLoading(false);
+  };
+
   const SUGGESTIONS = [
-    "What are common phishing signs?",
-    "How do I identify a scam SMS?",
-    "What if I clicked a phishing link?",
-    "Explain URL spoofing",
+    { language: "English", text: "What are common phishing signs?" },
+    { language: "English", text: "How do I identify a scam SMS?" },
+    { language: "English", text: "What if I clicked a phishing link?" },
+    { language: "English", text: "How can I protect my online accounts?" },
+    { language: "English", text: "Explain URL spoofing" },
+    { language: "සිංහල", text: "Phishing message එකක් හඳුනාගන්නේ කොහොමද?" },
+    { language: "සිංහල", text: "Scam SMS එකක් ලැබුණොත් මම මොකද කරන්නේ?" },
+    { language: "සිංහල", text: "මගේ password එක ආරක්ෂිතද කියලා බලන්නේ කොහොමද?" },
+    { language: "සිංහල", text: "Online scam එකකට අහුවුණොත් මොකද කරන්න ඕනේ?" },
+    { language: "සිංහල", text: "Phishing link එකක් click කළොත් මොකද කරන්නේ?" },
+    { language: "Singlish", text: "Me message eka scam ekakda kiyala balanne kohomada?" },
+    { language: "Singlish", text: "Mama phishing link ekak click kala, dan mokakda karanne?" },
+    { language: "Singlish", text: "Mage account eka secure karaganne kohomada?" },
+    { language: "Singlish", text: "Scam SMS ekak awoth reply karanna hondada?" },
+    { language: "Singlish", text: "Online shopping scam walin berila inne kohomada?" },
   ];
 
   return (
@@ -1028,17 +1072,23 @@ function AIAssistantPage({ t, account }) {
         {msgs.length === 1 && (
           <div style={{ padding: "0 24px 16px", display: "flex", flexWrap: "wrap", gap: 8 }}>
             {SUGGESTIONS.map(s => (
-              <button key={s} onClick={() => setInput(s)}
+              <button key={s.text} onClick={() => setInput(s.text)}
                 style={{ padding: "7px 14px", borderRadius: 20, border: `1px solid ${t.border}`, background: t.bg, color: t.textMuted, fontSize: 12, cursor: "pointer", transition: "all .2s" }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = t.accent; e.currentTarget.style.color = t.accent; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; e.currentTarget.style.color = t.textMuted; }}>
-                {s}
+                <span style={{ color: t.accent, fontWeight: 600, marginRight: 6 }}>{s.language}:</span>{s.text}
               </button>
             ))}
           </div>
         )}
 
-        <div style={{ padding: "16px 24px", borderTop: `1px solid ${t.border}`, display: "flex", gap: 12 }}>
+        <div style={{ padding: "16px 24px", borderTop: `1px solid ${t.border}`, display: "flex", gap: 10 }}>
+          <button onClick={() => fileRef.current?.click()} disabled={loading}
+            title="Analyze an image or document"
+            style={{ width: 46, height: 46, borderRadius: 10, border: `1px solid ${t.border}`, background: t.bg, color: t.accent, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Paperclip size={18} />
+          </button>
+          <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.log,.rtf,.csv,.json,.png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif" onChange={uploadFile} style={{ display: "none" }} />
           <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()}
             placeholder="Ask about cybersecurity threats..."
             style={{ flex: 1, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${t.inputBorder}`, background: t.input, color: t.text, fontSize: 14, outline: "none", transition: "border-color .2s" }}

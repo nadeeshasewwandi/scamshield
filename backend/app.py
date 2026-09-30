@@ -4,7 +4,9 @@ import csv
 import io
 import json
 import base64
+import zipfile
 import sqlite3
+import shutil
 import joblib
 import bcrypt
 import jwt
@@ -27,6 +29,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.ensemble import VotingClassifier
 
+
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -48,6 +51,17 @@ except Exception:  # pragma: no cover - optional dependency
 
     pytesseract = None
     TesseractNotFoundError = None
+
+if pytesseract is not None:
+    tesseract_candidates = [
+        shutil.which("tesseract"),
+        r"C:\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    tesseract_path = next((path for path in tesseract_candidates if path and os.path.isfile(path)), None)
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
 try:
     import pdfplumber
@@ -601,7 +615,7 @@ class AssistantResponder:
     def detect_language(message: str) -> str:
         if SINHALA_RANGE.search(message):
             return "sinhala"
-        singlish_words = r"oya|oyata|mata|api|ape|meka|eka|mokak|mokadda|kohomada|karanna|krnne|kiyanne|puluwanda|thiyenawa|nathi|hari|balanna|danna|ganna|denna|yanna|wena|wenne|wlt|ekak|hoda|hondada|identify|account|password|link|verify|click|urgent|scam|phishing|hack|hacking|cyber|security"
+        singlish_words = r"mama|oya|oyata|mata|api|ape|meka|meke|eka|ekak|ekk|mokak|mokadda|mokdda|kohomada|karanna|karanne|krnne|kiyanne|kiyala|kiynne|puluwanda|thiyenawa|thiyenawada|nathi|hari|balanna|danna|ganna|denna|yanna|wena|wenne|wlt|hoda|hondada|wenawada|puluwan"
         if re.search(rf"\b({singlish_words})\b", message.lower()):
             return "singlish"
         return "english"
@@ -630,9 +644,45 @@ class AssistantResponder:
             "what is phishing", "phishing meaning", "phishing examples", "explain phishing",
             "phishing kiyanne", "phishing kiyala", "phishing ගැන", "phishing කියන්නේ", "phishing යනු"
         ])
+        educational_spam_phishing = any(phrase in text for phrase in [
+            "what is spam and phishing", "what are spam and phishing", "spam and phishing meaning",
+            "spam saha phishing", "spam සහ phishing", "spam ගැන සහ phishing", "spam කියන්නේ සහ phishing",
+            "spam phishing kiyanne", "spam phishing kiynne", "spam phishing mokadda", "spam saha phishing kiyanne"
+        ])
         educational_scam = any(phrase in text for phrase in [
             "what is a scam", "what is scam", "scam meaning", "explain scam", "scam kiyanne", "scam kiyala",
+            "scam kiynne", "scam mokadda", "scam mokdda", "scam ekk kiynne", "scam ekk kiyanne",
             "scam ගැන", "scam කියන්නේ", "scam යනු"
+        ])
+        educational_threat = any(phrase in text for phrase in [
+            "what is a threat", "what is threat", "threat meaning", "explain threat",
+            "what is a cybersecurity threat", "cybersecurity threat meaning",
+            "threat kiyanne", "threat kiyala", "threat kiynne", "threat mokadda", "threat mokdda",
+            "threat ekak kiyanne", "threat ekak kiynne", "threat ගැන", "threat කියන්නේ", "threat යනු",
+            "තර්ජනය කියන්නේ", "තර්ජනය යනු", "තර්ජනයක් කියන්නේ", "threat එකක් කියන්නේ",
+            "cybersecurity threat එකක් කියන්නේ"
+        ]) or ("threat" in text and any(word in text for word in ["මොකක්ද", "mokakda", "mokdda", "kiyanne", "kiynne"]))
+        educational_risk = any(phrase in text for phrase in [
+            "what is risk", "risk meaning", "explain risk", "risk kiyanne", "risk kiynne",
+            "risk mokadda", "risk mokdda", "අවදානම කියන්නේ", "අවදානම යනු"
+        ])
+        phishing_signs_question = any(phrase in text for phrase in [
+            "common phishing signs", "phishing signs", "signs of phishing", "identify phishing",
+            "phishing message eka hadunaganne", "phishing message එකක් හඳුනාගන්නේ", "phishing එකක් හඳුනාගන්නේ"
+        ]) or ("phishing" in text and any(word in text for word in ["හඳුනාග", "ලක්ෂණ", "කොහොමද"]))
+        clicked_link_question = any(phrase in text for phrase in [
+            "clicked a phishing link", "clicked phishing link", "click a phishing link", "click phishing link",
+            "phishing link ekak click", "phishing link එකක් click", "phishing link eka click"
+        ])
+        scam_sms_question = any(phrase in text for phrase in [
+            "identify a scam sms", "scam sms", "scam message eka", "scam message එක", "suspicious sms"
+        ])
+        account_protection_question = any(phrase in text for phrase in [
+            "protect my online accounts", "secure my account", "account eka secure", "account එක ආරක්ෂිත",
+            "account eka protect", "account එක protect"
+        ])
+        url_spoofing_question = any(phrase in text for phrase in [
+            "explain url spoofing", "url spoofing kiyanne", "url spoofing කියන්නේ"
         ])
         malware_question = any(word in text for word in [
             "malware", "virus", "trojan", "spyware", "ransomware", "මැල්වෙයාර්", "වයිරස්", "වෛරස"
@@ -688,6 +738,48 @@ class AssistantResponder:
                 "Scam walin araksha wenna hurry wela act karanna epa, unexpected links click karanna epa, passwords/OTPs share karanna epa, senderwa independently verify karanna, unique passwords saha 2FA use karanna, devices update karanna, suspicious messages report karanna. ScamShield message saha URL analyze karanawa, namuth important requests official channels walin verify karanna."
             )
 
+        if phishing_signs_question:
+            return choose(
+                "Common phishing signs are urgent pressure, unexpected links or attachments, misspelled domains, unusual sender addresses, requests for passwords or OTPs, prize or refund claims, and messages that discourage independent verification. Do not click or reply; verify through the organization's official website or phone number.",
+                "Phishing message එකක සාමාන්‍ය ලක්ෂණ වන්නේ ඉක්මනින් act කරන්න කියන pressure, නොසිතූ links හෝ attachments, වැරදි spelling සහිත domains, අමුතු sender address, password හෝ OTP ඉල්ලීම, prize/refund claims සහ වෙනම verify කරන්න එපා කියන එකයි. Click හෝ reply නොකර official website/phone number එකෙන් verify කරන්න.",
+                "Phishing message ekaka common signs thamai hurry karanna kiyena eka, unexpected links/attachments, misspell wena domains, strange sender address, password/OTP illana eka, prize/refund claims saha independently verify karanna epa kiyena eka. Click/reply nokara official website or phone number eken verify karanna."
+            )
+
+        if educational_spam_phishing:
+            return choose(
+                "Spam is unwanted or mass-sent content, such as promotional emails, repeated messages, or advertisements. Phishing is a targeted scam that pretends to be a trusted person or organization to steal passwords, OTPs, card details, or money. Some phishing messages are delivered as spam, but not all spam is phishing. Do not click suspicious links or share sensitive information.",
+                "Spam කියන්නේ අවශ්‍ය නැති හෝ විශාල පිරිසකට එකවර යවන promotional emails, repeated messages සහ advertisements වගේ පණිවිඩ. Phishing කියන්නේ විශ්වාස කරන පුද්ගලයෙක් හෝ ආයතනයක් වගේ පෙනී සිට password, OTP, card details හෝ මුදල් සොරකම් කරන්න කරන targeted scam එකක්. Phishing messages සමහරවිට spam ලෙස එනවා, නමුත් සියලුම spam phishing නොවේ. සැක සහිත links click කරන්න හෝ sensitive information share කරන්න එපා.",
+                "Spam kiyala unwanted nathnam godak denekuta ekama welawe yawan promotional emails, repeated messages saha ads wage dewal. Phishing kiyala trusted kenek nathnam organization ekak wage penila passwords, OTP, card details nathnam salli ganna target karana scam ekak. Samahara phishing messages spam widihata enawa, namuth spam siyallama phishing newei. Suspicious links click karanna or sensitive information share karanna epa."
+            )
+
+        if clicked_link_question:
+            return choose(
+                "If you clicked a phishing link, close the page, do not enter any information, disconnect from the internet if a file downloaded, run a security scan, change any exposed passwords from the official website, enable 2FA, and contact your bank immediately if financial details were entered.",
+                "Phishing link එකක් click කළා නම් page එක close කරන්න, කිසිම තොරතුරක් ඇතුළත් කරන්න එපා, file එකක් download වුණා නම් internet disconnect කර security scan එකක් run කරන්න. Exposed passwords official website එකෙන් change කර 2FA enable කරන්න; bank details දුන්නා නම් bank එකට වහාම contact කරන්න.",
+                "Phishing link ekak click kala nam page eka close karanna, details enter karanna epa, file ekak download una nam internet disconnect karala security scan ekak run karanna. Exposed passwords official website eken change karala 2FA enable karanna; bank details dunna nam bank ekata ikmanin call karanna."
+            )
+
+        if scam_sms_question:
+            return choose(
+                "To identify a scam SMS, check whether it creates urgency, asks you to click a link, requests a password or OTP, uses a strange sender or URL, promises a prize or refund, or contains unusual spelling. Do not reply or click; verify with the organization directly.",
+                "Scam SMS එකක් හඳුනාගන්න urgency එකක් තියෙනවාද, link එකක් click කරන්න කියනවාද, password/OTP ඉල්ලනවාද, sender හෝ URL එක අමුතුද, prize/refund එකක් කියනවාද, spelling අසාමාන්‍යද බලන්න. Reply හෝ click නොකර organization එකෙන් direct verify කරන්න.",
+                "Scam SMS ekak identify karanna urgency thiyenawada, link ekak click karanna kiyanawada, password/OTP illanawada, sender/URL eka strange da, prize/refund ekak kiyanawada, spelling awul da balanna. Reply/click nokara organization eken direct verify karanna."
+            )
+
+        if account_protection_question:
+            return choose(
+                "Protect online accounts with a unique long password for each account, a password manager, multi-factor authentication, current software, login alerts, and recovery details you control. Review active sessions regularly and never share passwords or OTPs.",
+                "Online accounts ආරක්ෂා කරගන්න සෑම account එකකටම වෙනස් දිග password එකක් සහ password manager එකක් භාවිතා කරන්න, multi-factor authentication enable කරන්න, software update කරන්න, login alerts දාන්න සහ recovery details ඔබට පමණක් පාලනය කළ හැකි ලෙස තබන්න. Active sessions check කර password/OTP share කරන්න එපා.",
+                "Online accounts protect karanna account ekakata unique strong password ekak, password manager ekak, MFA, updated software saha login alerts use karanna. Recovery details oyata witharak control wena widihata thiyanna, active sessions check karanna, password/OTP share karanna epa."
+            )
+
+        if url_spoofing_question:
+            return choose(
+                "URL spoofing is making a fake web address look like a trusted one, often by misspelling the brand, adding misleading subdomains, or using a similar-looking domain. Read the full domain from right to left, do not trust the padlock alone, and open the official site manually.",
+                "URL spoofing කියන්නේ විශ්වාස කරන website එකක් වගේ පෙනෙන්න fake web address එකක් සෑදීමයි. Brand name එක වැරදි spelling එකකින් ලිවීම, misleading subdomains හෝ සමාන domain භාවිතා කිරීම සාමාන්‍යයි. Full domain එක හොඳින් බලලා official site එක manually open කරන්න; padlock එක පමණක් විශ්වාස කරන්න එපා.",
+                "URL spoofing kiyala trusted website ekak wage penna fake web address ekak hadana eka. Brand name misspell karanawa, misleading subdomains danawa, similar domain use karanawa. Full domain eka balanna, padlock eka witharak trust karanna epa, official site eka manually open karanna."
+            )
+
         if educational_phishing:
             return choose(
                 "Phishing is a cyber attack that impersonates a trusted person or organization to steal passwords, OTPs, card details, or money. Warning signs include urgency, unexpected links, fake domains, attachments, and requests for confidential information. Verify through the official website or phone number, not the message link.",
@@ -700,6 +792,20 @@ class AssistantResponder:
                 "A scam is deliberate deception used to steal money, information, access, or identity. Scams may arrive by SMS, email, phone call, social media, fake jobs, prizes, investments, or support messages. Pause, verify independently, and never share passwords or OTPs.",
                 "Scam කියන්නේ මුදල්, තොරතුරු, account access හෝ identity එක සොරකම් කරන්න කරන වංචාවක්. SMS, email, calls, social media, fake jobs, prizes, investments හෝ support messages ලෙස එන්න පුළුවන්. ඉක්මන් නොවී වෙනම official channel එකකින් verify කරන්න; password හෝ OTP දෙන්න එපා.",
                 "Scam kiyala salli, information, account access nathnam identity eka horakam karanna karana deception ekak. SMS, email, calls, social media, fake jobs, prizes, investments wage widihata enna puluwan. Hurry wenna epa, independently verify karanna, password/OTP denna epa."
+            )
+
+        if educational_threat:
+            return choose(
+                "A cybersecurity threat is anything that can harm your device, account, network, data, or money. Examples include phishing, malware, ransomware, weak passwords, account takeovers, fake websites, and social-engineering scams. Reduce the risk with updates, strong unique passwords, 2FA, backups, and careful verification of links and requests.",
+                "Cybersecurity threat එකක් කියන්නේ ඔබේ device, account, network, data හෝ මුදල් වලට හානි කළ හැකි ඕනෑම අවදානමක්. Phishing, malware, ransomware, weak passwords, account takeover, fake websites සහ social-engineering scams උදාහරණ වේ. Updates, strong unique passwords, 2FA, backups සහ links/requests හොඳින් verify කිරීමෙන් අවදානම අඩු කරන්න.",
+                "Cybersecurity threat ekak kiyanne oyage device, account, network, data nathnam salli walata harm karanna puluwan deyak. Phishing, malware, ransomware, weak passwords, account takeover, fake websites saha social-engineering scams examples. Updates, strong unique passwords, 2FA, backups saha links/requests verify karala risk eka adu karanna."
+            )
+
+        if educational_risk:
+            return choose(
+                "Cybersecurity risk is the possibility that a threat will cause harm or loss. For example, clicking a fake link can expose your password or install malware. Lower the risk by avoiding unexpected links, using 2FA, updating devices, and verifying requests independently.",
+                "Cybersecurity risk කියන්නේ threat එකක් නිසා හානියක් හෝ පාඩුවක් සිදුවීමට ඇති හැකියාවයි. උදාහරණයක් ලෙස fake link එකක් click කිරීමෙන් password එක හෙළිවීමට හෝ malware install වීමට පුළුවන්. Unexpected links avoid කර, 2FA භාවිතා කර, devices update කර, requests වෙනම verify කිරීමෙන් risk එක අඩු කරන්න.",
+                "Cybersecurity risk kiyanne threat ekak nisa harm ekak nathnam loss ekak wenna puluwan chance eka. Fake link ekak click kaloth password eka expose wenna nathnam malware install wenna puluwan. Unexpected links avoid karala, 2FA use karala, devices update karala, requests independently verify karanna."
             )
 
         if malware_question:
@@ -821,11 +927,34 @@ class AssistantResponder:
                 "Link eka suspicious wenna puluwan, domain eka strange nadda, misspellings nadda, shortener nadda balanna. Manual verify karala click karanna."
             )
 
+        # Keep the offline fallback useful when an external AI provider is
+        # unavailable and the user's wording does not match an exact intent.
+        if any(word in text for word in ["password", "login", "ගිණුම", "account", "credential"]):
+            return choose(
+                "Keep your account safe with a unique password, multi-factor authentication, updated software, and login alerts. Never share a password, PIN, or OTP. If you received a suspicious request, verify it through the official website or phone number.",
+                "ගිණුම ආරක්ෂා කරගන්න unique password එකක්, multi-factor authentication, updated software සහ login alerts භාවිතා කරන්න. Password, PIN හෝ OTP කිසිම කෙනෙකුට දෙන්න එපා. සැක සහිත request එකක් නම් official website හෝ phone number එකෙන් verify කරන්න.",
+                "Account eka protect karanna unique password ekak, MFA, updated software saha login alerts use karanna. Password, PIN nathnam OTP kisima kenekuta denna epa. Suspicious request ekak nam official website or phone number eken verify karanna."
+            )
+
+        if any(word in text for word in ["money", "payment", "bank", "card", "සල්ලි", "මුදල්", "බැංකු", "ගෙවීම"]):
+            return choose(
+                "Treat unexpected payment or banking requests as suspicious. Do not click links or share card details, PINs, passwords, or OTPs. Contact your bank using the official number and report unauthorized transactions immediately.",
+                "අපේක්ෂා නොකළ payment හෝ banking request එකක් සැක සහිත ලෙස සලකන්න. Links click කරන්න හෝ card details, PIN, password, OTP share කරන්න එපා. Official number එකෙන් bank එක අමතා unauthorized transactions වහාම report කරන්න.",
+                "Unexpected payment or banking request ekak suspicious kiyala balanna. Links click karanna epa, card details/PIN/password/OTP share karanna epa. Official number eken bank ekata call karala unauthorized transactions ikmanin report karanna."
+            )
+
+        if any(word in text for word in ["whatsapp", "facebook", "instagram", "social media", "වට්ස්ඇප්", "සමාජ මාධ්‍ය"]):
+            return choose(
+                "For suspicious social-media or messaging-account activity, do not reply or open links. Change the password from the official app, sign out other sessions, enable two-factor authentication, and report the account or message.",
+                "සැක සහිත social-media හෝ messaging account activity එකක් නම් reply කරන්න හෝ links open කරන්න එපා. Official app එකෙන් password change කරලා අනෙක් sessions sign out කරන්න, two-factor authentication enable කර message/account එක report කරන්න.",
+                "Suspicious social-media nathnam messaging activity ekak nam reply karanna or links open karanna epa. Official app eken password change karala other sessions sign out karanna, 2FA enable karala message/account eka report karanna."
+            )
+
         if language == "sinhala":
-            return "මෙය ScamShield cybersecurity assistant එකයි. Scam, phishing, hacking, malware, suspicious links, account security, privacy සහ online safety ගැන ප්‍රශ්නයක් අහන්න. Message එකක් හෝ URL එකක් සැක නම් මෙතැන දාන්න; password, OTP හෝ API key share කරන්න එපා."
+            return "ඔබේ ප්‍රශ්නයට නිවැරදිව පිළිතුරු දෙන්න message එක හෝ URL එක මෙතැන paste කරන්න. Scam, phishing, hacking, malware, account security සහ online safety ගැන උදව් කළ හැක. Password, OTP හෝ API key share කරන්න එපා."
         if language == "singlish":
-            return "Meka ScamShield cybersecurity assistant eka. Scam, phishing, hacking, malware, suspicious links, account security, privacy saha online safety gena onama prashnayak ahanna. Message ekak nathnam URL ekak suspect nam methana danna; password, OTP, API key share karanna epa."
-        return "I am the ScamShield cybersecurity assistant. Ask me about scams, phishing, hacking, malware, suspicious URLs, account security, privacy, online safety, or how this AI detection system works. You can also paste a suspicious message or URL, but never share passwords, OTPs, or API keys."
+            return "Hari answer ekak denna message eka nathnam URL eka methana paste karanna. Scam, phishing, hacking, malware, account security saha online safety gena udaw karanna puluwan. Password, OTP, API key share karanna epa."
+        return "To give an accurate answer, paste the suspicious message or URL and explain what happened. I can help with scams, phishing, hacking, malware, account security, privacy, and online safety. Never share passwords, OTPs, or API keys."
 
 
 # ============================================================
@@ -846,6 +975,20 @@ def init_db():
             created_at TEXT
         )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            user_identifier TEXT NOT NULL,
+            raw_input TEXT,
+            prediction TEXT,
+            risk_score REAL,
+            language TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             name TEXT PRIMARY KEY,
@@ -1058,6 +1201,16 @@ def extract_text_from_bytes(payload: bytes, filename: str):
             return text, None
         except Exception as exc:
             return "", f"Unable to read PDF content: {exc}"
+
+    if name.endswith(".docx"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as document:
+                xml = document.read("word/document.xml").decode("utf-8", errors="ignore")
+            text = re.sub(r"</w:p>|</w:tr>", "\n", xml)
+            text = re.sub(r"<[^>]+>", "", text)
+            return text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">") .strip(), None
+        except Exception as exc:
+            return "", f"Unable to read Word document: {exc}"
 
     if name.endswith((".txt", ".md", ".log", ".rtf")):
         return payload.decode("utf-8", errors="ignore").strip(), None
@@ -1426,6 +1579,12 @@ def call_openai_chat(message: str, history: list) -> str:
 def call_gemini_chat(message: str, history: list) -> str:
     if not GEMINI_API_KEY:
         raise ValueError("No Gemini API key configured")
+    detected_language = AssistantResponder.detect_language(message)
+    language_instruction = {
+        "english": "The required output language is English. Use English only.",
+        "sinhala": "The required output language is Sinhala script. Use Sinhala script only, with necessary technical terms in English.",
+        "singlish": "The required output language is Singlish: Romanized Sinhala using Latin letters. Do not use Sinhala Unicode script.",
+    }[detected_language]
     contents = []
     if isinstance(history, list):
         for item in history:
@@ -1437,7 +1596,7 @@ def call_gemini_chat(message: str, history: list) -> str:
     contents.append({"role": "user", "parts": [{"text": message}]})
     request_body = json.dumps({
         "systemInstruction": {
-            "parts": [{"text": "You are ScamShield AI Assistant, a cybersecurity specialist. Answer questions about scams, phishing, spam, malware, privacy, online safety, suspicious URLs, account security, and this AI-based scam detection system. Reply in the same language as the user: Sinhala script for Sinhala, Singlish for Romanized Sinhala, and English for English. For mixed messages, use the dominant language. Be clear, practical, and safe. Never ask users to share passwords, API keys, OTPs, or private credentials. If unrelated, redirect briefly to cybersecurity."}]
+            "parts": [{"text": f"You are ScamShield AI Assistant, a cybersecurity specialist. Answer questions about scams, phishing, spam, malware, privacy, online safety, suspicious URLs, account security, and this AI-based scam detection system. {language_instruction} The user's detected language is {detected_language}. This language requirement is strict even when the question contains English cybersecurity words or shorthand spelling. Answer the user's actual question directly. Be clear, practical, and safe. Never ask users to share passwords, API keys, OTPs, or private credentials. If unrelated, redirect briefly to cybersecurity."}]
         },
         "contents": contents,
         "generationConfig": {"temperature": 0.4, "maxOutputTokens": 600},
@@ -1479,6 +1638,20 @@ def chat():
     if not message:
         return jsonify({"error": "No message provided"}), 400
 
+    # Prefer the deterministic responder for supported cybersecurity intents so
+    # answers stay relevant and match the user's language consistently.
+    local_response = AssistantResponder.respond(message, history)
+    generic_responses = {
+        "I am the ScamShield cybersecurity assistant. Ask me about scams, phishing, hacking, malware, suspicious URLs, account security, privacy, online safety, or how this AI detection system works. You can also paste a suspicious message or URL, but never share passwords, OTPs, or API keys.",
+        "මෙය ScamShield cybersecurity assistant එකයි. Scam, phishing, hacking, malware, suspicious links, account security, privacy සහ online safety ගැන ප්‍රශ්නයක් අහන්න. Message එකක් හෝ URL එකක් සැක නම් මෙතැන දාන්න; password, OTP හෝ API key share කරන්න එපා.",
+        "Meka ScamShield cybersecurity assistant eka. Scam, phishing, hacking, malware, suspicious links, account security, privacy saha online safety gena onama prashnayak ahanna. Message ekak nathnam URL ekak suspect nam methana danna; password, OTP, API key share karanna epa.",
+        "ඔබේ ප්‍රශ්නයට නිවැරදිව පිළිතුරු දෙන්න message එක හෝ URL එක මෙතැන paste කරන්න. Scam, phishing, hacking, malware, account security සහ online safety ගැන උදව් කළ හැක. Password, OTP හෝ API key share කරන්න එපා.",
+        "Hari answer ekak denna message eka nathnam URL eka methana paste karanna. Scam, phishing, hacking, malware, account security saha online safety gena udaw karanna puluwan. Password, OTP, API key share karanna epa.",
+        "To give an accurate answer, paste the suspicious message or URL and explain what happened. I can help with scams, phishing, hacking, malware, account security, privacy, and online safety. Never share passwords, OTPs, or API keys.",
+    }
+    if local_response not in generic_responses:
+        return jsonify({"response": local_response, "source": "local"})
+
     if GEMINI_API_KEY:
         try:
             response = call_gemini_chat(message, history)
@@ -1500,8 +1673,7 @@ def chat():
         except Exception as exc:
             return jsonify({"error": f"AI provider error: {str(exc)}"}), 502
 
-    response = AssistantResponder.respond(message, history)
-    return jsonify({"response": response, "source": "fallback"})
+    return jsonify({"response": local_response, "source": "fallback"})
 
 
 @app.route("/api/bulk-scan", methods=["POST"])
